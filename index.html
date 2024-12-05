@@ -47,7 +47,7 @@
         canvas {
             min-height: 400px;
         }
-        .signal {
+        .signals-summary {
             text-align: center;
             margin: 20px 0;
             font-size: 18px;
@@ -66,12 +66,7 @@
             <canvas id="priceChart"></canvas>
         </div>
 
-        <div class="chart-container">
-            <div class="chart-title">Volume</div>
-            <canvas id="volumeChart"></canvas>
-        </div>
-
-        <div class="signal" id="signals"></div>
+        <div class="signals-summary" id="signalsSummary"></div>
     </div>
 
     <script>
@@ -101,17 +96,42 @@
             });
         }
 
-        function generateBuySellSignals(shortSMA, longSMA, times) {
+        function generateBuySellSignals(shortSMA, longSMA, times, prices) {
             const signals = [];
+            let buyPrice = null;
+
             for (let i = 1; i < shortSMA.length; i++) {
                 if (shortSMA[i] > longSMA[i] && shortSMA[i - 1] <= longSMA[i - 1]) {
-                    signals.push({ type: 'Buy', time: times[i] });
+                    buyPrice = prices[i];
+                    signals.push({ type: 'Buy', time: times[i], price: buyPrice });
                 }
-                if (shortSMA[i] < longSMA[i] && shortSMA[i - 1] >= longSMA[i - 1]) {
-                    signals.push({ type: 'Sell', time: times[i] });
+                if (shortSMA[i] < longSMA[i] && shortSMA[i - 1] >= longSMA[i - 1] && buyPrice !== null) {
+                    const sellPrice = prices[i];
+                    signals.push({ type: 'Sell', time: times[i], price: sellPrice });
+                    buyPrice = null; // Reset for the next buy
                 }
             }
             return signals;
+        }
+
+        function calculateProfitFromSignals(signals) {
+            let profit = 0;
+            let btcHeld = 0;
+            let totalInvested = 1000; // Assume $1000 initial investment
+            let initialBTC = totalInvested / signals[0].price;
+
+            for (let i = 0; i < signals.length; i++) {
+                if (signals[i].type === 'Buy') {
+                    btcHeld = totalInvested / signals[i].price;
+                    totalInvested = 0;
+                } else if (signals[i].type === 'Sell') {
+                    totalInvested = btcHeld * signals[i].price;
+                    btcHeld = 0;
+                    profit += totalInvested - 1000; // Calculate profit after the round-trip
+                }
+            }
+
+            return { profit, btcHeld, totalInvested, initialBTC };
         }
 
         function createPriceChart(data, shortSMA, longSMA, signals) {
@@ -148,22 +168,6 @@
                 },
                 options: {
                     responsive: true,
-                    plugins: {
-                        annotation: {
-                            annotations: signals.map(signal => ({
-                                type: 'line',
-                                borderColor: signal.type === 'Buy' ? '#00ff00' : '#ff4444',
-                                borderWidth: 2,
-                                scaleID: 'x',
-                                value: signal.time,
-                                label: {
-                                    content: signal.type,
-                                    enabled: true,
-                                    backgroundColor: signal.type === 'Buy' ? '#00ff00' : '#ff4444',
-                                },
-                            }))
-                        }
-                    },
                     scales: {
                         x: {
                             type: 'time',
@@ -171,38 +175,6 @@
                         },
                         y: {
                             title: { display: true, text: 'Price (USD)' }
-                        }
-                    }
-                }
-            });
-        }
-
-        function createVolumeChart(data) {
-            const ctx = document.getElementById('volumeChart').getContext('2d');
-            const times = data.map(d => d.time);
-            const volumes = data.map(d => d.volume);
-
-            new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: times,
-                    datasets: [
-                        {
-                            label: 'BTC Volume',
-                            data: volumes,
-                            backgroundColor: '#00ff00'
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: { unit: 'day' },
-                        },
-                        y: {
-                            title: { display: true, text: 'Volume' }
                         }
                     }
                 }
@@ -219,21 +191,27 @@
             const shortSMA = calculateSMA(closePrices, 20); // 20-day SMA
             const longSMA = calculateSMA(closePrices, 50); // 50-day SMA
 
-            const signals = generateBuySellSignals(shortSMA, longSMA, times);
+            const signals = generateBuySellSignals(shortSMA, longSMA, times, closePrices);
 
-            const latestPrice = closePrices[closePrices.length - 1];
-            const prevPrice = closePrices[closePrices.length - 2];
-            const change = latestPrice - prevPrice;
-            const changePercent = (change / prevPrice) * 100;
+            const { profit, btcHeld, totalInvested, initialBTC } = calculateProfitFromSignals(signals);
+            const overallGain = ((closePrices[closePrices.length - 1] / closePrices[0]) - 1) * 100;
+            const signalGain = ((totalInvested / 1000) - 1) * 100;
 
-            document.getElementById('price').innerText = `BTC: $${latestPrice.toFixed(2)}`;
-            document.getElementById('change').innerText = `Change: ${change > 0 ? '+' : ''}${change.toFixed(2)} (${changePercent.toFixed(2)}%)`;
-            document.getElementById('change').className = change > 0 ? 'positive' : 'negative';
+            document.getElementById('price').innerText = `BTC: $${closePrices[closePrices.length - 1].toFixed(2)}`;
+            document.getElementById('change').innerText = `Overall BTC Gain: ${overallGain.toFixed(2)}% | Signal Gain: ${signalGain.toFixed(2)}%`;
+            document.getElementById('change').className = signalGain > 0 ? 'positive' : 'negative';
 
-            document.getElementById('signals').innerText = signals.map(signal => `${signal.type} Signal on ${signal.time.toDateString()}`).join('\n');
+            const signalsSummary = signals.map(
+                (s, i) =>
+                    `${s.type} at $${s.price.toFixed(2)} on ${s.time.toDateString()}${
+                        s.type === 'Sell' && signals[i - 1]?.type === 'Buy'
+                            ? ` | Gain: ${((s.price - signals[i - 1].price) / signals[i - 1].price * 100).toFixed(2)}%`
+                            : ''
+                    }`
+            ).join('<br>');
+            document.getElementById('signalsSummary').innerHTML = signalsSummary;
 
             createPriceChart(data, shortSMA, longSMA, signals);
-            createVolumeChart(data);
         }
 
         updateDashboard();
