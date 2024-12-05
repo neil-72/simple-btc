@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>BTC Price & Indicators</title>
+    <title>BTC Advanced Analytics</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -14,15 +14,24 @@
             margin: 20px;
         }
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
         }
         .price { 
             font-size: 48px; 
-            text-align: center; 
             color: #00ff00; 
-            margin: 20px;
+            margin: 10px 0;
         }
+        .change {
+            font-size: 24px;
+            margin: 10px 0;
+        }
+        .positive { color: #00ff00; }
+        .negative { color: #ff4444; }
         .chart-container {
             background: #111;
             border-radius: 10px;
@@ -35,221 +44,214 @@
             margin-bottom: 20px;
             color: #00ff00;
         }
+        .signals {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        .signal {
+            background: #111;
+            padding: 15px 25px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .buy { border: 2px solid #00ff00; }
+        .sell { border: 2px solid #ff4444; }
+        .neutral { border: 2px solid #888; }
+        .indicator-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .indicator-box {
+            background: #111;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .indicator-label {
+            color: #888;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+        .indicator-value {
+            font-size: 20px;
+            color: #00ff00;
+        }
+        canvas {
+            min-height: 400px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="price" id="price">Loading...</div>
+        <div class="header">
+            <div class="price" id="price">Loading...</div>
+            <div class="change" id="change"></div>
+        </div>
+
+        <div class="signals" id="signals">
+            <!-- Signals will be inserted here -->
+        </div>
+
+        <div class="indicator-grid" id="indicators">
+            <!-- Indicators will be inserted here -->
+        </div>
         
         <div class="chart-container">
-            <div class="chart-title">Bitcoin Price - Last 2 Years</div>
+            <div class="chart-title">Bitcoin Price with Bollinger Bands</div>
             <canvas id="priceChart"></canvas>
         </div>
         
         <div class="chart-container">
+            <div class="chart-title">Volume</div>
+            <canvas id="volumeChart"></canvas>
+        </div>
+
+        <div class="chart-container">
             <div class="chart-title">Technical Indicators</div>
             <canvas id="indicatorChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <div class="chart-title">MACD</div>
+            <canvas id="macdChart"></canvas>
         </div>
     </div>
 
     <script>
-        let priceChart, indicatorChart;
+        // Your existing chart initialization code here...
+        // Adding technical indicator calculations...
+        
+        function calculateBollingerBands(prices, period = 20, multiplier = 2) {
+            const sma = prices.map((p, i) => {
+                if (i < period - 1) return null;
+                const sum = prices.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
+                return sum / period;
+            });
 
-        // Calculate RSI
-        function calculateRSI(prices, period = 14) {
-            const changes = prices.slice(1).map((price, i) => price - prices[i]);
-            const gains = changes.map(change => change > 0 ? change : 0);
-            const losses = changes.map(change => change < 0 ? -change : 0);
+            const upperBand = sma.map((s, i) => {
+                if (i < period - 1) return null;
+                const slice = prices.slice(i - period + 1, i + 1);
+                const std = Math.sqrt(slice.reduce((sum, x) => sum + Math.pow(x - s, 2), 0) / period);
+                return s + (multiplier * std);
+            });
+
+            const lowerBand = sma.map((s, i) => {
+                if (i < period - 1) return null;
+                const slice = prices.slice(i - period + 1, i + 1);
+                const std = Math.sqrt(slice.reduce((sum, x) => sum + Math.pow(x - s, 2), 0) / period);
+                return s - (multiplier * std);
+            });
+
+            return { middle: sma, upper: upperBand, lower: lowerBand };
+        }
+
+        function calculateMACD(prices, fastPeriod = 12, slowPeriod = 26, signalPeriod = 9) {
+            const fastEMA = calculateEMA(prices, fastPeriod);
+            const slowEMA = calculateEMA(prices, slowPeriod);
+            const macdLine = fastEMA.map((fast, i) => fast - slowEMA[i]);
+            const signalLine = calculateEMA(macdLine, signalPeriod);
+            const histogram = macdLine.map((macd, i) => macd - signalLine[i]);
+
+            return { macdLine, signalLine, histogram };
+        }
+
+        function calculateStochastic(prices, high, low, period = 14) {
+            return prices.map((close, i) => {
+                if (i < period - 1) return null;
+                const slice = prices.slice(i - period + 1, i + 1);
+                const highSlice = high.slice(i - period + 1, i + 1);
+                const lowSlice = low.slice(i - period + 1, i + 1);
+                const highest = Math.max(...highSlice);
+                const lowest = Math.min(...lowSlice);
+                return ((close - lowest) / (highest - lowest)) * 100;
+            });
+        }
+
+        function generateSignals(prices, rsi, macd, bb) {
+            const signals = [];
             
-            const rsi = Array(period).fill(null);
-            let avgGain = gains.slice(0, period).reduce((a, b) => a + b) / period;
-            let avgLoss = losses.slice(0, period).reduce((a, b) => a + b) / period;
+            // RSI signals
+            if (rsi[rsi.length - 1] < 30) signals.push({ type: 'buy', reason: 'RSI Oversold' });
+            if (rsi[rsi.length - 1] > 70) signals.push({ type: 'sell', reason: 'RSI Overbought' });
 
-            for (let i = period; i < prices.length; i++) {
-                avgGain = (avgGain * (period - 1) + gains[i - 1]) / period;
-                avgLoss = (avgLoss * (period - 1) + losses[i - 1]) / period;
-                
-                const rs = avgGain / avgLoss;
-                rsi.push(100 - (100 / (1 + rs)));
-            }
-            return rsi;
+            // MACD signals
+            const lastMACD = macd.macdLine[macd.macdLine.length - 1];
+            const prevMACD = macd.macdLine[macd.macdLine.length - 2];
+            const lastSignal = macd.signalLine[macd.signalLine.length - 1];
+            const prevSignal = macd.signalLine[macd.signalLine.length - 2];
+
+            if (prevMACD < prevSignal && lastMACD > lastSignal) 
+                signals.push({ type: 'buy', reason: 'MACD Crossover' });
+            if (prevMACD > prevSignal && lastMACD < lastSignal) 
+                signals.push({ type: 'sell', reason: 'MACD Crossover' });
+
+            // Bollinger Band signals
+            const lastPrice = prices[prices.length - 1];
+            if (lastPrice <= bb.lower[bb.lower.length - 1]) 
+                signals.push({ type: 'buy', reason: 'BB Bottom Bounce' });
+            if (lastPrice >= bb.upper[bb.upper.length - 1]) 
+                signals.push({ type: 'sell', reason: 'BB Top Bounce' });
+
+            return signals;
         }
 
-        // Calculate EMA
-        function calculateEMA(prices, period) {
-            const k = 2 / (period + 1);
-            const ema = [prices[0]];
-            
-            for (let i = 1; i < prices.length; i++) {
-                ema.push(prices[i] * k + ema[i - 1] * (1 - k));
-            }
-            return ema;
-        }
-
-        async function updatePrice() {
+        async function updateData() {
             try {
-                const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
-                const data = await response.json();
-                document.getElementById('price').textContent = 
-                    '$' + parseFloat(data.price).toLocaleString();
-            } catch (error) {
-                console.error('Price error:', error);
-            }
-        }
-
-        async function updateCharts() {
-            try {
-                // Fetch 2 years of daily data (730 days)
+                // Fetch all required data...
                 const response = await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=730');
                 const data = await response.json();
                 
+                // Process price data...
                 const prices = data.map(d => ({
-                    x: new Date(d[0]),
-                    y: parseFloat(d[4])
+                    time: new Date(d[0]),
+                    open: parseFloat(d[1]),
+                    high: parseFloat(d[2]),
+                    low: parseFloat(d[3]),
+                    close: parseFloat(d[4]),
+                    volume: parseFloat(d[5])
                 }));
 
-                // Calculate indicators
-                const priceValues = prices.map(p => p.y);
-                const rsi = calculateRSI(priceValues);
-                const ema20 = calculateEMA(priceValues, 20);
-                const ema50 = calculateEMA(priceValues, 50);
+                // Calculate all indicators...
+                const closeValues = prices.map(p => p.close);
+                const highValues = prices.map(p => p.high);
+                const lowValues = prices.map(p => p.low);
+                const volumeValues = prices.map(p => p.volume);
 
-                // Update price chart
-                if (priceChart) priceChart.destroy();
-                const priceCtx = document.getElementById('priceChart').getContext('2d');
-                
-                priceChart = new Chart(priceCtx, {
-                    type: 'line',
-                    data: {
-                        datasets: [{
-                            label: 'Bitcoin Price USD',
-                            data: prices,
-                            borderColor: '#00ff00',
-                            borderWidth: 2,
-                            tension: 0.4,
-                            pointRadius: 0
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            y: {
-                                grid: { color: '#333' },
-                                ticks: { 
-                                    color: '#fff',
-                                    callback: value => '$' + value.toLocaleString()
-                                }
-                            },
-                            x: {
-                                type: 'time',
-                                time: { unit: 'month' },
-                                grid: { color: '#333' },
-                                ticks: { color: '#fff' }
-                            }
-                        },
-                        plugins: {
-                            legend: { labels: { color: '#fff' } }
-                        }
-                    }
-                });
+                const rsi = calculateRSI(closeValues);
+                const bb = calculateBollingerBands(closeValues);
+                const macd = calculateMACD(closeValues);
+                const stoch = calculateStochastic(closeValues, highValues, lowValues);
 
-                // Update indicator chart
-                if (indicatorChart) indicatorChart.destroy();
-                const indicatorCtx = document.getElementById('indicatorChart').getContext('2d');
-                
-                indicatorChart = new Chart(indicatorCtx, {
-                    type: 'line',
-                    data: {
-                        datasets: [{
-                            label: 'RSI',
-                            data: rsi.map((value, index) => ({
-                                x: prices[index].x,
-                                y: value
-                            })),
-                            borderColor: '#ff0000',
-                            borderWidth: 2,
-                            yAxisID: 'rsi',
-                            tension: 0.4,
-                            pointRadius: 0
-                        }, {
-                            label: '20 EMA',
-                            data: ema20.map((value, index) => ({
-                                x: prices[index].x,
-                                y: value
-                            })),
-                            borderColor: '#00ffff',
-                            borderWidth: 2,
-                            yAxisID: 'price',
-                            tension: 0.4,
-                            pointRadius: 0
-                        }, {
-                            label: '50 EMA',
-                            data: ema50.map((value, index) => ({
-                                x: prices[index].x,
-                                y: value
-                            })),
-                            borderColor: '#ffff00',
-                            borderWidth: 2,
-                            yAxisID: 'price',
-                            tension: 0.4,
-                            pointRadius: 0
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            rsi: {
-                                position: 'right',
-                                grid: { color: '#333' },
-                                ticks: { 
-                                    color: '#fff'
-                                },
-                                min: 0,
-                                max: 100
-                            },
-                            price: {
-                                position: 'left',
-                                grid: { color: '#333' },
-                                ticks: { 
-                                    color: '#fff',
-                                    callback: value => '$' + value.toLocaleString()
-                                }
-                            },
-                            x: {
-                                type: 'time',
-                                time: { unit: 'month' },
-                                grid: { color: '#333' },
-                                ticks: { color: '#fff' }
-                            }
-                        },
-                        plugins: {
-                            legend: { 
-                                labels: { color: '#fff' },
-                                position: 'top'
-                            }
-                        }
-                    }
-                });
+                // Generate trading signals
+                const signals = generateSignals(closeValues, rsi, macd, bb);
+
+                // Update UI with signals
+                const signalsContainer = document.getElementById('signals');
+                signalsContainer.innerHTML = signals.map(signal => `
+                    <div class="signal ${signal.type}">
+                        <div>${signal.type.toUpperCase()}</div>
+                        <div>${signal.reason}</div>
+                    </div>
+                `).join('');
+
+                // Update all charts...
+                updateCharts(prices, rsi, bb, macd, stoch, volumeValues);
 
             } catch (error) {
-                console.error('Chart error:', error);
+                console.error('Data update error:', error);
             }
         }
 
-        // Make charts responsive
-        document.querySelectorAll('canvas').forEach(canvas => {
-            canvas.style.height = '400px';
-        });
-
         // Initial load
-        updatePrice();
-        updateCharts();
+        updateData();
 
-        // Update every 10 seconds for price, every minute for charts
-        setInterval(updatePrice, 10000);
-        setInterval(updateCharts, 60000);
+        // Update every minute
+        setInterval(updateData, 60000);
     </script>
 </body>
 </html>
