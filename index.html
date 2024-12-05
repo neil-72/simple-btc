@@ -44,14 +44,30 @@
             margin-bottom: 20px;
             color: #00ff00;
         }
+        .indicators {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
         canvas {
-            min-height: 400px;
+            min-height: 300px;
         }
         .signals-summary {
             text-align: center;
             margin: 20px 0;
             font-size: 18px;
+            line-height: 1.5;
         }
+        .signal-details {
+            display: inline-block;
+            margin: 5px;
+            padding: 10px;
+            border-radius: 5px;
+            background: #111;
+        }
+        .signal-buy { border: 1px solid #00ff00; }
+        .signal-sell { border: 1px solid #ff4444; }
     </style>
 </head>
 <body>
@@ -62,8 +78,19 @@
         </div>
 
         <div class="chart-container">
-            <div class="chart-title">Bitcoin Price with Buy/Sell Signals</div>
+            <div class="chart-title">Bitcoin Price with Signals</div>
             <canvas id="priceChart"></canvas>
+        </div>
+
+        <div class="indicators">
+            <div class="chart-container">
+                <div class="chart-title">Stochastic Oscillator</div>
+                <canvas id="stochasticChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <div class="chart-title">On Balance Volume (OBV)</div>
+                <canvas id="obvChart"></canvas>
+            </div>
         </div>
 
         <div class="signals-summary" id="signalsSummary"></div>
@@ -96,48 +123,116 @@
             });
         }
 
-        function generateBuySellSignals(shortSMA, longSMA, times, prices) {
-            const signals = [];
-            let buyPrice = null;
-
-            for (let i = 1; i < shortSMA.length; i++) {
-                if (shortSMA[i] > longSMA[i] && shortSMA[i - 1] <= longSMA[i - 1]) {
-                    buyPrice = prices[i];
-                    signals.push({ type: 'Buy', time: times[i], price: buyPrice });
-                }
-                if (shortSMA[i] < longSMA[i] && shortSMA[i - 1] >= longSMA[i - 1] && buyPrice !== null) {
-                    const sellPrice = prices[i];
-                    signals.push({ type: 'Sell', time: times[i], price: sellPrice });
-                    buyPrice = null; // Reset for the next buy
-                }
+        function calculateStochastic(data, period = 14, kPeriod = 3, dPeriod = 3) {
+            const stoch = [];
+            const closes = data.map(d => d.close);
+            
+            // Calculate %K for each point
+            for (let i = period - 1; i < data.length; i++) {
+                const periodData = data.slice(i - period + 1, i + 1);
+                const highestHigh = Math.max(...periodData.map(d => d.high));
+                const lowestLow = Math.min(...periodData.map(d => d.low));
+                const currentClose = closes[i];
+                
+                const k = ((currentClose - lowestLow) / (highestHigh - lowestLow)) * 100;
+                stoch.push(k);
             }
-            return signals;
+            
+            // Calculate %K (smoothed)
+            const kLine = calculateSMA(stoch, kPeriod);
+            // Calculate %D
+            const dLine = calculateSMA(kLine, dPeriod);
+
+            // Pad the beginning with nulls for alignment
+            const paddingK = Array(period - 1).fill(null);
+            const paddingD = Array(period - 1 + kPeriod - 1).fill(null);
+
+            return {
+                k: [...paddingK, ...kLine],
+                d: [...paddingD, ...dLine]
+            };
         }
 
-        function calculateProfitFromSignals(signals) {
-            let profit = 0;
-            let btcHeld = 0;
-            let totalInvested = 1000; // Assume $1000 initial investment
-            let initialBTC = totalInvested / signals[0].price;
-
-            for (let i = 0; i < signals.length; i++) {
-                if (signals[i].type === 'Buy') {
-                    btcHeld = totalInvested / signals[i].price;
-                    totalInvested = 0;
-                } else if (signals[i].type === 'Sell') {
-                    totalInvested = btcHeld * signals[i].price;
-                    btcHeld = 0;
-                    profit += totalInvested - 1000; // Calculate profit after the round-trip
+        function calculateOBV(data) {
+            let obv = [0];
+            
+            for (let i = 1; i < data.length; i++) {
+                const currentClose = data[i].close;
+                const previousClose = data[i-1].close;
+                const currentVolume = data[i].volume;
+                
+                if (currentClose > previousClose) {
+                    obv.push(obv[i-1] + currentVolume);
+                } else if (currentClose < previousClose) {
+                    obv.push(obv[i-1] - currentVolume);
+                } else {
+                    obv.push(obv[i-1]);
                 }
             }
+            
+            return obv;
+        }
 
-            return { profit, btcHeld, totalInvested, initialBTC };
+        function generateSignals(data, shortSMA, longSMA, stoch, obv) {
+            const signals = [];
+            let inPosition = false;
+            
+            for (let i = 50; i < data.length; i++) {
+                const price = data[i].close;
+                const time = data[i].time;
+                
+                // Buy signal conditions
+                if (!inPosition) {
+                    const smaSignal = shortSMA[i] > longSMA[i] && shortSMA[i-1] <= longSMA[i-1];
+                    const stochSignal = stoch.k[i] < 20 && stoch.k[i] > stoch.d[i] && stoch.k[i-1] <= stoch.d[i-1];
+                    const obvSignal = obv[i] > obv[i-1] && obv[i-1] > obv[i-2];
+                    
+                    if ((smaSignal && stochSignal) || (smaSignal && obvSignal)) {
+                        signals.push({
+                            type: 'Buy',
+                            time: time,
+                            price: price,
+                            reason: `${smaSignal ? 'SMA Cross' : ''} ${stochSignal ? 'Oversold' : ''} ${obvSignal ? 'Volume Trend' : ''}`.trim()
+                        });
+                        inPosition = true;
+                    }
+                }
+                // Sell signal conditions
+                else {
+                    const smaSignal = shortSMA[i] < longSMA[i] && shortSMA[i-1] >= longSMA[i-1];
+                    const stochSignal = stoch.k[i] > 80 && stoch.k[i] < stoch.d[i] && stoch.k[i-1] >= stoch.d[i-1];
+                    const obvSignal = obv[i] < obv[i-1] && obv[i-1] < obv[i-2];
+                    
+                    if ((smaSignal && stochSignal) || (smaSignal && obvSignal)) {
+                        signals.push({
+                            type: 'Sell',
+                            time: time,
+                            price: price,
+                            reason: `${smaSignal ? 'SMA Cross' : ''} ${stochSignal ? 'Overbought' : ''} ${obvSignal ? 'Volume Trend' : ''}`.trim()
+                        });
+                        inPosition = false;
+                    }
+                }
+            }
+            
+            return signals;
         }
 
         function createPriceChart(data, shortSMA, longSMA, signals) {
             const ctx = document.getElementById('priceChart').getContext('2d');
             const times = data.map(d => d.time);
-            const closePrices = data.map(d => d.close);
+            const prices = data.map(d => d.close);
+            
+            // Create buy/sell points
+            const buyPoints = signals.filter(s => s.type === 'Buy').map(s => ({
+                x: s.time,
+                y: s.price
+            }));
+            
+            const sellPoints = signals.filter(s => s.type === 'Sell').map(s => ({
+                x: s.time,
+                y: s.price
+            }));
 
             new Chart(ctx, {
                 type: 'line',
@@ -146,23 +241,42 @@
                     datasets: [
                         {
                             label: 'BTC Price',
-                            data: closePrices,
+                            data: prices,
                             borderColor: '#00ff00',
                             tension: 0.1,
                         },
                         {
-                            label: 'Short-Term SMA',
+                            label: '20-Day SMA',
                             data: shortSMA,
                             borderColor: '#ffcc00',
                             tension: 0.1,
                             borderDash: [5, 5],
                         },
                         {
-                            label: 'Long-Term SMA',
+                            label: '50-Day SMA',
                             data: longSMA,
                             borderColor: '#ff4444',
                             tension: 0.1,
                             borderDash: [5, 5],
+                        },
+                        {
+                            label: 'Buy Signals',
+                            data: buyPoints,
+                            backgroundColor: '#00ff00',
+                            borderColor: '#00ff00',
+                            pointStyle: 'triangle',
+                            pointRadius: 12,
+                            showLine: false
+                        },
+                        {
+                            label: 'Sell Signals',
+                            data: sellPoints,
+                            backgroundColor: '#ff4444',
+                            borderColor: '#ff4444',
+                            pointStyle: 'triangle',
+                            pointRadius: 12,
+                            showLine: false,
+                            rotation: 180
                         }
                     ]
                 },
@@ -172,50 +286,168 @@
                         x: {
                             type: 'time',
                             time: { unit: 'day' },
+                            grid: {
+                                color: '#333'
+                            }
                         },
                         y: {
-                            title: { display: true, text: 'Price (USD)' }
+                            grid: {
+                                color: '#333'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#fff'
+                            }
                         }
                     }
                 }
             });
         }
 
-        async function updateDashboard() {
-            const data = await fetchPriceData();
-            if (data.length === 0) return;
-
+        function createStochasticChart(data, stoch) {
+            const ctx = document.getElementById('stochasticChart').getContext('2d');
             const times = data.map(d => d.time);
-            const closePrices = data.map(d => d.close);
 
-            const shortSMA = calculateSMA(closePrices, 20); // 20-day SMA
-            const longSMA = calculateSMA(closePrices, 50); // 50-day SMA
-
-            const signals = generateBuySellSignals(shortSMA, longSMA, times, closePrices);
-
-            const { profit, btcHeld, totalInvested, initialBTC } = calculateProfitFromSignals(signals);
-            const overallGain = ((closePrices[closePrices.length - 1] / closePrices[0]) - 1) * 100;
-            const signalGain = ((totalInvested / 1000) - 1) * 100;
-
-            document.getElementById('price').innerText = `BTC: $${closePrices[closePrices.length - 1].toFixed(2)}`;
-            document.getElementById('change').innerText = `Overall BTC Gain: ${overallGain.toFixed(2)}% | Signal Gain: ${signalGain.toFixed(2)}%`;
-            document.getElementById('change').className = signalGain > 0 ? 'positive' : 'negative';
-
-            const signalsSummary = signals.map(
-                (s, i) =>
-                    `${s.type} at $${s.price.toFixed(2)} on ${s.time.toDateString()}${
-                        s.type === 'Sell' && signals[i - 1]?.type === 'Buy'
-                            ? ` | Gain: ${((s.price - signals[i - 1].price) / signals[i - 1].price * 100).toFixed(2)}%`
-                            : ''
-                    }`
-            ).join('<br>');
-            document.getElementById('signalsSummary').innerHTML = signalsSummary;
-
-            createPriceChart(data, shortSMA, longSMA, signals);
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: times,
+                    datasets: [
+                        {
+                            label: '%K Line',
+                            data: stoch.k,
+                            borderColor: '#00ff00',
+                            tension: 0.1,
+                        },
+                        {
+                            label: '%D Line',
+                            data: stoch.d,
+                            borderColor: '#ff4444',
+                            tension: 0.1,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'day' },
+                            grid: {
+                                color: '#333'
+                            }
+                        },
+                        y: {
+                            min: 0,
+                            max: 100,
+                            grid: {
+                                color: '#333'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#fff'
+                            }
+                        }
+                    }
+                }
+            });
         }
 
+        function createOBVChart(data, obv) {
+            const ctx = document.getElementById('obvChart').getContext('2d');
+            const times = data.map(d => d.time);
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: times,
+                    datasets: [{
+                        label: 'On Balance Volume',
+                        data: obv,
+                        borderColor: '#00ff00',
+                        tension: 0.1,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'day' },
+                            grid: {
+                                color: '#333'
+                            }
+                        },
+                        y: {
+                            grid: {
+                                color: '#333'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#fff'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateDashboard() {
+            fetchPriceData().then(data => {
+                if (data.length === 0) return;
+
+                const closePrices = data.map(d => d.close);
+                const shortSMA = calculateSMA(closePrices, 20);
+                const longSMA = calculateSMA(closePrices, 50);
+                const stoch = calculateStochastic(data);
+                const obv = calculateOBV(data);
+                const signals = generateSignals(data, shortSMA, longSMA, stoch, obv);
+
+                // Update current price and change
+                const currentPrice = closePrices[closePrices.length - 1];
+                const previousPrice = closePrices[closePrices.length - 2];
+                const priceChange = ((currentPrice - previousPrice) / previousPrice) * 100;
+
+                document.getElementById('price').innerText = `BTC: ${currentPrice.toFixed(2)}`;
+                document.getElementById('change').innerText = `24h Change: ${priceChange > 0 ? '+' : ''}${priceChange.toFixed(2)}%`;
+                document.getElementById('change').className = priceChange >= 0 ? 'change positive' : 'change negative';
+
+                // Create charts
+                createPriceChart(data, shortSMA, longSMA, signals);
+                createStochasticChart(data, stoch);
+                createOBVChart(data, obv);
+
+                // Update signals summary with enhanced details
+                const signalsSummary = signals.map((s, i) => {
+                    let profitLoss = '';
+                    if (s.type === 'Sell' && signals[i-1]?.type === 'Buy') {
+                        const percentChange = ((s.price - signals[i-1].price) / signals[i-1].price * 100).toFixed(2);
+                        profitLoss = ` | P/L: ${percentChange}%`;
+                    }
+                    
+                    return `<div class="signal-details signal-${s.type.toLowerCase()}">
+                        ${s.type} at ${s.price.toFixed(2)} 
+                        on ${s.time.toLocaleDateString()}
+                        <br>Reason: ${s.reason}${profitLoss}
+                    </div>`;
+                }).join('');
+                
+                document.getElementById('signalsSummary').innerHTML = signalsSummary;
+            });
+        }
+
+        // Initial update and set interval for periodic updates
         updateDashboard();
-        setInterval(updateDashboard, 60000);
+        setInterval(updateDashboard, 60000); // Update every minute
     </script>
 </body>
 </html>
